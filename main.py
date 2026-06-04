@@ -10,6 +10,7 @@ import json
 import os
 import traceback
 import sys
+import math
 
 from spotify_auth import SpotifyAuthenticator
 from spotify_api import SpotifyAPI
@@ -102,12 +103,12 @@ class SpotifyWidget:
     def __init__(self, root):
         self.root = root
         self.root.title("Spotify Widget")
-        self.widget_width = 320
+        self.widget_width = 360
+        self.widget_height = 360
         self.visible_rows = 5
-        self.row_height = 38
-        self.control_height = 34
+        self.row_height = 48
+        self.control_height = 58
         self.content_height = self.visible_rows * self.row_height
-        self.widget_height = self.content_height + self.control_height
         self.root.geometry(f"{self.widget_width}x{self.widget_height}")
         self.root.resizable(False, False)
         
@@ -181,7 +182,7 @@ class SpotifyWidget:
         # self.authenticate()
 
     def enable_rounded_corners(self):
-        """Ask Windows to render rounded corners when supported."""
+        """Clip the borderless window into a rounded, slightly bowed panel."""
         if sys.platform != "win32":
             return
 
@@ -189,15 +190,13 @@ class SpotifyWidget:
             import ctypes
 
             hwnd = self.root.winfo_id()
-            corner_radius = 18
-            region = ctypes.windll.gdi32.CreateRoundRectRgn(
-                0,
-                0,
-                self.widget_width + 1,
-                self.widget_height + 1,
-                corner_radius,
-                corner_radius
-            )
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+            points = self.fisheye_region_points()
+            point_array = (POINT * len(points))(*[POINT(x, y) for x, y in points])
+            region = ctypes.windll.gdi32.CreatePolygonRgn(point_array, len(points), 1)
             ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
 
             DWMWA_WINDOW_CORNER_PREFERENCE = 33
@@ -211,6 +210,68 @@ class SpotifyWidget:
             )
         except Exception:
             pass
+
+    def fisheye_region_points(self):
+        """Build a rounded outline with a subtle fish-eye bulge."""
+        width = self.widget_width
+        height = self.widget_height
+        radius = 32
+        inset = 16
+        points = []
+
+        for i in range(12):
+            t = i / 11
+            x = int(inset + radius + t * (width - 2 * (inset + radius)))
+            y = int(3 + 9 * math.sin(math.pi * t))
+            points.append((x, y))
+
+        for i in range(9):
+            angle = math.radians(-90 + (i / 8) * 90)
+            points.append((
+                int(width - inset - radius + radius * math.cos(angle)),
+                int(radius + radius * math.sin(angle))
+            ))
+
+        for i in range(14):
+            t = i / 13
+            y = int(radius + t * (height - 2 * radius))
+            bow = int(12 * math.sin(math.pi * t))
+            points.append((width - inset + bow, y))
+
+        for i in range(9):
+            angle = math.radians((i / 8) * 90)
+            points.append((
+                int(width - inset - radius + radius * math.cos(angle)),
+                int(height - radius + radius * math.sin(angle))
+            ))
+
+        for i in range(12):
+            t = i / 11
+            x = int(width - inset - radius - t * (width - 2 * (inset + radius)))
+            y = int(height - 3 - 9 * math.sin(math.pi * t))
+            points.append((x, y))
+
+        for i in range(9):
+            angle = math.radians(90 + (i / 8) * 90)
+            points.append((
+                int(inset + radius + radius * math.cos(angle)),
+                int(height - radius + radius * math.sin(angle))
+            ))
+
+        for i in range(14):
+            t = i / 13
+            y = int(height - radius - t * (height - 2 * radius))
+            bow = int(12 * math.sin(math.pi * t))
+            points.append((inset - bow, y))
+
+        for i in range(9):
+            angle = math.radians(180 + (i / 8) * 90)
+            points.append((
+                int(inset + radius + radius * math.cos(angle)),
+                int(radius + radius * math.sin(angle))
+            ))
+
+        return points
 
     def load_settings(self):
         """Load widget settings from config file"""
@@ -261,9 +322,9 @@ class SpotifyWidget:
             self.root.geometry(f"+{x}+{y}")
 
     def apply_transparency(self):
-        """Apply transparency based on slider value"""
-        alpha = self.transparency / 100.0
-        self.root.attributes('-alpha', alpha)
+        """Apply opacity to the retro background only."""
+        self.setup_styles()
+        self.draw_pixel_background()
 
     def setup_styles(self):
         """Setup custom styles for the widget"""
@@ -275,198 +336,201 @@ class SpotifyWidget:
         self.fg_color = self.palette["fg"]
         self.accent_color = self.palette["accent"]
         self.text_secondary = self.palette["text_secondary"]
+        self.panel_bg = self.blend_color(self.bg_color, "#000000", self.transparency / 100.0)
+        self.panel_alt_bg = self.blend_color(self.secondary_bg, "#050505", self.transparency / 100.0)
+
+    def blend_color(self, foreground, background, amount):
+        amount = max(0, min(1, amount))
+        fg = tuple(int(foreground[i:i + 2], 16) for i in (1, 3, 5))
+        bg = tuple(int(background[i:i + 2], 16) for i in (1, 3, 5))
+        mixed = tuple(int(bg[i] + (fg[i] - bg[i]) * amount) for i in range(3))
+        return f"#{mixed[0]:02x}{mixed[1]:02x}{mixed[2]:02x}"
+
+    def draw_pixel_background(self):
+        if not hasattr(self, "background_canvas"):
+            return
+
+        self.background_canvas.configure(bg=self.panel_bg)
+        self.background_canvas.delete("checker")
+        tile = 24
+
+        for y in range(0, self.widget_height, tile):
+            for x in range(0, self.widget_width, tile):
+                color = self.panel_bg if ((x // tile) + (y // tile)) % 2 == 0 else self.panel_alt_bg
+                self.background_canvas.create_rectangle(
+                    x,
+                    y,
+                    x + tile,
+                    y + tile,
+                    fill=color,
+                    outline=color,
+                    tags="checker"
+                )
+
+        self.background_canvas.lower("checker")
+
+        for canvas_name in ("artists_canvas", "songs_canvas"):
+            if hasattr(self, canvas_name):
+                self.draw_canvas_checker(getattr(self, canvas_name), self.widget_width - 46, self.content_height)
+
+    def draw_canvas_checker(self, canvas, width, height):
+        canvas.configure(bg=self.panel_bg)
+        canvas.delete("checker")
+        tile = 24
+
+        for y in range(0, height + tile, tile):
+            for x in range(0, width + tile, tile):
+                color = self.panel_bg if ((x // tile) + (y // tile)) % 2 == 0 else self.panel_alt_bg
+                canvas.create_rectangle(
+                    x,
+                    y,
+                    x + tile,
+                    y + tile,
+                    fill=color,
+                    outline=color,
+                    tags="checker"
+                )
+
+        canvas.lower("checker")
 
     def create_ui(self):
         """Create the widget UI"""
-        # Main container
-        main_frame = tk.Frame(self.root, bg=self.bg_color)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-        self.main_frame = main_frame
-        
-        # Top control bar with tabs and time range
-        self.control_frame = tk.Frame(
-            main_frame,
-            bg=self.secondary_bg
+        self.background_canvas = tk.Canvas(
+            self.root,
+            bg=self.panel_bg,
+            highlightthickness=0,
+            borderwidth=0
         )
+        self.background_canvas.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        self.draw_pixel_background()
 
-        self.control_frame.pack(fill=tk.X)
-        
-        # Left frame for tabs
-        tabs_frame = tk.Frame(self.control_frame, bg=self.secondary_bg)
-        tabs_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        # Create notebook (tabs) for Artists/Songs
-        self.notebook = ttk.Notebook(tabs_frame)
-        self.notebook.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=0, pady=0)
-        
-        # Artists tab
-        artists_tab = tk.Frame(self.notebook, bg=self.secondary_bg)
-        self.notebook.add(artists_tab, text="🎤")
-        
-        # Songs tab
-        songs_tab = tk.Frame(self.notebook, bg=self.secondary_bg)
-        self.notebook.add(songs_tab, text="🎵")
-        
-        # Bind tab change
-        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
-        
-        # Right frame for time range and settings
-        buttons_frame = tk.Frame(self.control_frame, bg=self.secondary_bg)
-        buttons_frame.pack(side=tk.RIGHT, padx=6, pady=4)
-        
-        self.time_buttons = {}
-        button_configs = [
-            ("W", "short_term"),
-            ("M", "medium_term"),
-            ("6M", "long_term")
-        ]
-        
-        for label, code in button_configs:
-            is_selected = code == self.current_time_range
-            btn = tk.Button(
-                buttons_frame,
-                text=label,
-                font=("Segoe UI", 7, "bold"),
-                bg=self.accent_color if is_selected else self.tertiary_bg,
-                fg=self.bg_color if is_selected else self.fg_color,
-                border=0,
-                command=lambda c=code: self.change_time_range(c),
-                relief=tk.FLAT,
-                padx=5,
-                pady=2,
-                activebackground=self.accent_color,
-                activeforeground=self.bg_color
-            )
-            btn.pack(side=tk.LEFT, padx=1)
-            self.time_buttons[code] = btn
-        
-        # Settings button
-        settings_btn = tk.Button(
-            buttons_frame,
-            text="⚙",
-            font=("Arial", 8),
-            bg=self.tertiary_bg,
-            fg=self.text_secondary,
-            border=0,
-            command=self.toggle_settings,
-            relief=tk.FLAT,
-            padx=4,
-            pady=2,
-            activebackground=self.accent_color,
-            activeforeground=self.bg_color
+        main_frame = tk.Frame(self.background_canvas, bg=self.panel_bg)
+        self.background_canvas.create_window(
+            (18, 18),
+            window=main_frame,
+            anchor=tk.NW,
+            width=self.widget_width - 36,
+            height=self.widget_height - 36
         )
-        settings_btn.pack(side=tk.LEFT, padx=2)
-        self.settings_btn = settings_btn
-        
-        # Content and settings container
-        self.content_settings_frame = tk.Frame(main_frame, bg=self.bg_color)
+        self.main_frame = main_frame
+
+        self.content_settings_frame = tk.Frame(main_frame, bg=self.panel_bg)
         self.content_settings_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-        
-        # Create content frame (for artists/songs)
-        self.content_frame = tk.Frame(self.content_settings_frame, bg=self.bg_color)
+
+        self.content_frame = tk.Frame(self.content_settings_frame, bg=self.panel_bg)
         self.content_frame.pack(fill=tk.BOTH, expand=False, padx=0, pady=0)
         self.content_frame.configure(height=self.content_height)
         self.content_frame.pack_propagate(False)
-        
-        # Create scrollable content for artists
+
+        self.control_frame = tk.Frame(main_frame, bg=self.secondary_bg)
+        self.control_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(8, 0))
+
+        buttons_frame = tk.Frame(self.control_frame, bg=self.secondary_bg)
+        buttons_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        self.tab_buttons = {}
+        for label, tab_name in [("Artists", "artists"), ("Songs", "songs")]:
+            btn = self.create_control_button(
+                buttons_frame,
+                label,
+                lambda name=tab_name: self.change_tab(name)
+            )
+            btn.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+            self.tab_buttons[tab_name] = btn
+
+        self.time_buttons = {}
+        for label, code in [("Week", "short_term"), ("Month", "medium_term"), ("6M", "long_term")]:
+            btn = self.create_control_button(
+                buttons_frame,
+                label,
+                lambda c=code: self.change_time_range(c)
+            )
+            btn.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+            self.time_buttons[code] = btn
+
+        settings_btn = self.create_control_button(
+            buttons_frame,
+            "Settings",
+            self.toggle_settings
+        )
+        settings_btn.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+        self.settings_btn = settings_btn
+        self.update_control_states()
+
         self.artists_canvas = tk.Canvas(
             self.content_frame,
-            bg=self.bg_color,
+            bg=self.panel_bg,
             highlightthickness=0,
             borderwidth=0
         )
         self.artists_canvas.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-        
-        # Scrollbar for artists
+
         artists_scroll = ttk.Scrollbar(
             self.content_frame,
             orient=tk.VERTICAL,
             command=self.artists_canvas.yview
         )
         artists_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
+
         self.artists_canvas.config(yscrollcommand=artists_scroll.set)
-        self.artists_content = tk.Frame(self.artists_canvas, bg=self.bg_color)
-        self.artists_canvas.create_window((0, 0), window=self.artists_content, anchor=tk.NW, width=self.widget_width - 10)
-        
-        # Create scrollable content for songs
+        self.artists_content = tk.Frame(self.artists_canvas, bg=self.panel_bg)
+        self.artists_canvas.create_window((0, 0), window=self.artists_content, anchor=tk.NW, width=self.widget_width - 46)
+        self.draw_canvas_checker(self.artists_canvas, self.widget_width - 46, self.content_height)
+
         self.songs_canvas = tk.Canvas(
             self.content_frame,
-            bg=self.bg_color,
+            bg=self.panel_bg,
             highlightthickness=0,
             borderwidth=0
         )
-        
-        # Scrollbar for songs
+
         songs_scroll = ttk.Scrollbar(
-            self.songs_canvas,
+            self.content_frame,
             orient=tk.VERTICAL,
             command=self.songs_canvas.yview
         )
-        
+
         self.songs_canvas.config(yscrollcommand=songs_scroll.set)
-        self.songs_content = tk.Frame(self.songs_canvas, bg=self.bg_color)
-        self.songs_canvas.create_window((0, 0), window=self.songs_content, anchor=tk.NW, width=self.widget_width - 10)
-        
-        # Store canvases for switching
+        self.songs_content = tk.Frame(self.songs_canvas, bg=self.panel_bg)
+        self.songs_canvas.create_window((0, 0), window=self.songs_content, anchor=tk.NW, width=self.widget_width - 46)
+        self.draw_canvas_checker(self.songs_canvas, self.widget_width - 46, self.content_height)
+
         self.canvases = {
             "artists": (self.artists_canvas, self.artists_content, artists_scroll),
             "songs": (self.songs_canvas, self.songs_content, songs_scroll)
         }
-        
-        # Bind mouse wheel
+
         self.root.bind_all("<MouseWheel>", self._on_mousewheel)
-        
-        # Show artists canvas by default
         self.artists_canvas.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
         artists_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Create settings frame (hidden by default)
+
         self.settings_frame = tk.Frame(self.content_settings_frame, bg=self.secondary_bg)
 
-        self.hide_controls()
-        self.bind_hover_controls()
+    def create_control_button(self, parent, text, command):
+        return tk.Button(
+            parent,
+            text=text,
+            font=("Segoe UI", 7, "bold"),
+            bg=self.tertiary_bg,
+            fg=self.fg_color,
+            border=1,
+            command=command,
+            relief=tk.RAISED,
+            padx=4,
+            pady=5,
+            activebackground=self.tertiary_bg,
+            activeforeground=self.fg_color
+        )
 
-    def bind_hover_controls(self):
-        """Show controls while the pointer is over the widget."""
-        hover_widgets = [
-            self.root,
-            self.main_frame,
-            self.control_frame,
-            self.content_settings_frame,
-            self.content_frame,
-            self.artists_canvas,
-            self.artists_content,
-            self.songs_canvas,
-            self.songs_content,
-            self.settings_frame,
-        ]
-
-        for widget in hover_widgets:
-            widget.bind("<Enter>", self.show_controls, add="+")
-            widget.bind("<Leave>", self.hide_controls_if_pointer_outside, add="+")
-
-    def show_controls(self, event=None):
-        if not self.control_frame.winfo_ismapped():
-            self.control_frame.pack(fill=tk.X, before=self.content_settings_frame)
-
-    def hide_controls(self):
-        if not self.settings_open:
-            self.control_frame.pack_forget()
-
-    def hide_controls_if_pointer_outside(self, event=None):
-        if self.settings_open:
+    def update_control_states(self):
+        if not hasattr(self, "tab_buttons"):
             return
 
-        x = self.root.winfo_pointerx()
-        y = self.root.winfo_pointery()
-        root_x = self.root.winfo_rootx()
-        root_y = self.root.winfo_rooty()
-        inside_x = root_x <= x < root_x + self.root.winfo_width()
-        inside_y = root_y <= y < root_y + self.root.winfo_height()
+        for tab, btn in self.tab_buttons.items():
+            btn.config(relief=tk.SUNKEN if tab == self.current_tab else tk.RAISED)
 
-        if not (inside_x and inside_y):
-            self.hide_controls()
+        for code, btn in self.time_buttons.items():
+            btn.config(relief=tk.SUNKEN if code == self.current_time_range else tk.RAISED)
 
     def toggle_settings(self):
         """Toggle settings panel"""
@@ -479,8 +543,7 @@ class SpotifyWidget:
         """Open settings panel"""
         self.settings_open = True
         self.dragging_enabled = False
-        self.show_controls()
-        self.settings_btn.config(bg=self.accent_color, fg=self.bg_color)
+        self.settings_btn.config(relief=tk.SUNKEN)
         
         # Hide content
         self.content_frame.pack_forget()
@@ -590,7 +653,7 @@ class SpotifyWidget:
         """Close settings panel"""
         self.settings_open = False
         self.dragging_enabled = True
-        self.settings_btn.config(bg=self.tertiary_bg, fg=self.text_secondary)
+        self.settings_btn.config(relief=tk.RAISED)
         
         # Hide settings frame
         self.settings_frame.pack_forget()
@@ -600,7 +663,7 @@ class SpotifyWidget:
         
         # Save settings
         self.save_settings()
-        self.hide_controls_if_pointer_outside()
+        self.update_control_states()
 
     def change_transparency(self, value):
         """Change widget transparency"""
@@ -616,7 +679,7 @@ class SpotifyWidget:
         for widget in self.root.winfo_children():
             widget.destroy()
         
-        self.root.configure(bg=self.bg_color)
+        self.root.configure(bg=self.panel_bg)
         self.create_ui()
         
         # Reopen settings
@@ -681,13 +744,7 @@ class SpotifyWidget:
     def change_time_range(self, time_code):
         """Change time range and reload data"""
         self.current_time_range = time_code
-        
-        # Update button states
-        for code, btn in self.time_buttons.items():
-            if code == time_code:
-                btn.config(bg=self.accent_color, fg=self.bg_color)
-            else:
-                btn.config(bg=self.tertiary_bg, fg=self.fg_color)
+        self.update_control_states()
         
         if not self.demo_mode:
             self.load_data()
@@ -814,11 +871,22 @@ class SpotifyWidget:
             justify=tk.LEFT
         )
         name_label.pack(anchor=tk.W)
+        
+        artist_label = tk.Label(
+            info_frame,
+            text=track['artist'],
+            font=("Segoe UI", 7),
+            bg=self.tertiary_bg,
+            fg=self.text_secondary,
+            wraplength=260,
+            justify=tk.LEFT
+        )
+        artist_label.pack(anchor=tk.W)
 
-    def on_tab_changed(self, event):
-        """Handle tab change"""
-        current_tab = self.notebook.index(self.notebook.select())
-        self.current_tab = "artists" if current_tab == 0 else "songs"
+    def change_tab(self, tab_name):
+        """Switch between artist and song lists."""
+        self.current_tab = tab_name
+        self.update_control_states()
         
         # Switch canvas visibility
         for canvas, content, scroll in self.canvases.values():
