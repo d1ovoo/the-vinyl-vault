@@ -61,7 +61,6 @@ the-vinyl-vault/
 ├── main.py                 # Main GUI application
 ├── spotify_auth.py         # Spotify authentication logic
 ├── spotify_api.py          # Spotify API interactions
-├── spotify_auth.py         # Spotify API authorization
 ├── widget_config.json      # Location and theme of the widget
 ├── requirements.txt        # Python dependencies
 ├── .env.example           # Example environment variables
