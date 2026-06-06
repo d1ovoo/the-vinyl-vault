@@ -4,7 +4,11 @@ Pixelated checkered background, CRT-style themes, Courier New font throughout.
 
 Vignette: Gaussian-kernel method (GeeksforGeeks / OpenCV style) applied directly
           to pixel data — no overlay canvas.  Uses numpy; cv2 not required.
+          Background sigma_factor=0.38 (tight, heavy dark border).
+          Album-art sigma_factor=0.50 (moderate edge darkening).
 Bloom:    Soft glow halo composited behind album-art images via PIL.
+          bloom_radius=10, bloom_strength=0.80 for a pronounced CRT glow.
+Scanlines: Every 2nd row dimmed 22 % (factor 0.78) to simulate phosphor gaps.
 """
 
 import tkinter as tk
@@ -416,7 +420,7 @@ class SpotifyWidget:
 
         # Gaussian vignette mask  (GFG method, sigma tuned to viewport size so
         # the effect is visible even when scrolled — we use content_height × w)
-        mask = self._make_vignette_mask(w, self.content_height, sigma_factor=0.48)
+        mask = self._make_vignette_mask(w, self.content_height, sigma_factor=0.38)
 
         # Tile the mask vertically to cover the full scroll height
         repeats = int(np.ceil(h / self.content_height))
@@ -424,6 +428,12 @@ class SpotifyWidget:
 
         # Multiply each channel by the mask
         img_arr *= tall_mask[:, :, None]
+
+        # ── CRT scanlines: darken every 2nd row to mimic phosphor line gaps ──
+        scanlines         = np.ones((h, 1, 1), dtype=np.float32)
+        scanlines[1::2]   = 0.78          # odd rows dimmed ~22 %
+        img_arr          *= scanlines
+
         img_arr  = np.clip(img_arr, 0, 255).astype(np.uint8)
 
         photo = ImageTk.PhotoImage(Image.fromarray(img_arr, "RGB"))
@@ -439,7 +449,7 @@ class SpotifyWidget:
         Returns the modified array.
         """
         h, w = arr.shape[:2]
-        mask = self._make_vignette_mask(w, h, sigma_factor=0.60)
+        mask = self._make_vignette_mask(w, h, sigma_factor=0.50)
         out  = arr.astype(np.float32)
         out *= mask[:, :, None]
         return np.clip(out, 0, 255).astype(np.uint8)
@@ -497,7 +507,7 @@ class SpotifyWidget:
 
             # Step 3: bloom halo composited behind the now-vignette'd image
             bloomed = self._apply_bloom(vignette_pil, size=size,
-                                        bloom_radius=7, bloom_strength=0.55)
+                                        bloom_radius=10, bloom_strength=0.80)
 
             photo = ImageTk.PhotoImage(bloomed)
             self.image_cache[key] = photo
