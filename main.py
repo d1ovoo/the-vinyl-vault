@@ -551,11 +551,11 @@ class SpotifyWidget:
     # ── Spotify auth / data ───────────────────────────────────────────────────
 
     def _show_loading(self, message="LOADING..."):
-        """Display a loading message in both canvases."""
-        for canvas, content in self.canvases.values():
-            for w in content.winfo_children():
+        """Display a loading message in both canvases without removing the content window."""
+        for canvas, frame in self.canvases.values():
+            for w in frame.winfo_children():
                 w.destroy()
-            canvas.delete("all")
+            canvas.delete("overlay")
             canvas.create_text(
                 self.widget_width // 2,
                 self.content_height // 2,
@@ -563,14 +563,20 @@ class SpotifyWidget:
                 font=(FONT, 9, "bold"),
                 fill=self.text_secondary,
                 anchor=tk.CENTER,
+                tags="overlay",
             )
+
+    def _clear_overlay(self):
+        """Remove loading/error overlay from all canvases."""
+        for canvas, _ in self.canvases.values():
+            canvas.delete("overlay")
 
     def _show_error(self, message):
         """Display an error message with a retry button."""
-        for canvas, content in self.canvases.values():
-            for w in content.winfo_children():
+        for canvas, frame in self.canvases.values():
+            for w in frame.winfo_children():
                 w.destroy()
-            canvas.delete("all")
+            canvas.delete("overlay")
             canvas.create_text(
                 self.widget_width // 2,
                 self.content_height // 2 - 24,
@@ -579,6 +585,7 @@ class SpotifyWidget:
                 fill=self.fg_color,
                 anchor=tk.CENTER,
                 width=self.widget_width - 20,
+                tags="overlay",
             )
         visible_canvas, _ = self.canvases[self.current_tab]
         btn = tk.Button(
@@ -597,6 +604,7 @@ class SpotifyWidget:
             self.widget_width // 2,
             self.content_height // 2 + 24,
             window=btn,
+            tags="overlay",
         )
 
     def authenticate(self):
@@ -659,6 +667,7 @@ class SpotifyWidget:
     # ── Display ──────────────────────────────────────────────────────────────
 
     def display_artists(self):
+        self._clear_overlay()
         self.item_images = []
         for w in self.artists_content.winfo_children():
             w.destroy()
@@ -673,6 +682,7 @@ class SpotifyWidget:
         self.artists_canvas.config(scrollregion=(0, 0, self.widget_width, max_scroll_height))
 
     def display_songs(self):
+        self._clear_overlay()
         self.item_images = []
         for w in self.songs_content.winfo_children():
             w.destroy()
