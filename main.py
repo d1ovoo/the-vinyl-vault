@@ -620,9 +620,22 @@ class SpotifyWidget:
         threading.Thread(target=self._load_data_thread, daemon=True).start()
 
     def _load_data_thread(self):
+        import concurrent.futures
         try:
-            artists = self.sp_api.get_top_artists(self.current_time_range, limit=15)
-            tracks  = self.sp_api.get_top_tracks(self.current_time_range, limit=15)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                f_artists = executor.submit(self.sp_api.get_top_artists, self.current_time_range, 15)
+                f_tracks  = executor.submit(self.sp_api.get_top_tracks,  self.current_time_range, 15)
+                try:
+                    artists = f_artists.result(timeout=15)
+                except concurrent.futures.TimeoutError:
+                    artists = []
+                    print("Artists fetch timed out")
+                try:
+                    tracks = f_tracks.result(timeout=15)
+                except concurrent.futures.TimeoutError:
+                    tracks = []
+                    print("Tracks fetch timed out")
+
             if artists:
                 self.artists_data = artists
                 self.root.after(0, self.display_artists)
@@ -634,10 +647,10 @@ class SpotifyWidget:
                 print("Live data loaded!")
             else:
                 self.root.after(0, lambda: self._show_error(
-                    "NO DATA RETURNED\nCheck your Spotify account has listening history."
+                    "NO DATA RETURNED\nSpotify returned nothing — your account may have no listening history,\nor the app is not approved."
                 ))
         except Exception as e:
-            msg = "REQUEST TIMED OUT\nCheck your internet connection and retry." if "timeout" in str(e).lower() else f"FAILED TO LOAD DATA\n{e}"
+            msg = f"FAILED TO LOAD DATA\n{e}"
             print(f"Data load error: {e}")
             self.root.after(0, lambda m=msg: self._show_error(m))
         finally:
