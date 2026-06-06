@@ -43,11 +43,11 @@ class SpotifyAPI:
             artists = []
             for item in results['items']:
                 artist_data = {
-                    'name': item['name'],
-                    'genres': ', '.join(item['genres']) if item['genres'] else 'N/A',
-                    'image': item['images'][0]['url'] if item['images'] else None,
-                    'popularity': item['popularity'],
-                    'url': item['external_urls'].get('spotify', '#')
+                    'name': item.get('name', 'Unknown'),
+                    'genres': ', '.join(item['genres']) if item.get('genres') else 'N/A',
+                    'image': item['images'][0]['url'] if item.get('images') else None,
+                    'popularity': item.get('popularity', 0),
+                    'url': item.get('external_urls', {}).get('spotify', '#')
                 }
                 artists.append(artist_data)
 
@@ -76,13 +76,13 @@ class SpotifyAPI:
             tracks = []
             for item in results['items']:
                 track_data = {
-                    'name': item['name'],
-                    'artist': ', '.join([artist['name'] for artist in item['artists']]),
-                    'album': item['album']['name'],
-                    'image': item['album']['images'][0]['url'] if item['album']['images'] else None,
-                    'popularity': item['popularity'],
-                    'url': item['external_urls'].get('spotify', '#'),
-                    'duration_ms': item['duration_ms']
+                    'name': item.get('name', 'Unknown'),
+                    'artist': ', '.join([a.get('name', '') for a in item.get('artists', [])]),
+                    'album': item.get('album', {}).get('name', 'Unknown'),
+                    'image': item['album']['images'][0]['url'] if item.get('album', {}).get('images') else None,
+                    'popularity': item.get('popularity', 0),
+                    'url': item.get('external_urls', {}).get('spotify', '#'),
+                    'duration_ms': item.get('duration_ms', 0)
                 }
                 tracks.append(track_data)
 
