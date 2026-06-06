@@ -45,7 +45,7 @@ class SpotifyAuthenticator:
             cache_path=".spotifyauth_cache"
         )
 
-        return spotipy.Spotify(auth_manager=auth_manager)
+        return spotipy.Spotify(auth_manager=auth_manager, requests_timeout=10)
 
     def is_authenticated(self):
         """

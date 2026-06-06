@@ -637,8 +637,9 @@ class SpotifyWidget:
                     "NO DATA RETURNED\nCheck your Spotify account has listening history."
                 ))
         except Exception as e:
+            msg = "REQUEST TIMED OUT\nCheck your internet connection and retry." if "timeout" in str(e).lower() else f"FAILED TO LOAD DATA\n{e}"
             print(f"Data load error: {e}")
-            self.root.after(0, lambda: self._show_error(f"FAILED TO LOAD DATA\n{e}"))
+            self.root.after(0, lambda m=msg: self._show_error(m))
         finally:
             self.loading = False
 
