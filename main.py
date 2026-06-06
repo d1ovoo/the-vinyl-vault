@@ -2,15 +2,17 @@
 Spotify Dashboard Widget — Retro Pixel Edition
 Pixelated checkered background, CRT-style themes, Courier New font throughout.
 
-Text bloom: Each primary label uses GlowLabel — a Canvas widget that renders
-            the text at small offsets in a stippled accent colour beneath the
-            sharp foreground text, producing a soft phosphor-glow effect native
-            to tkinter (no PIL, no numpy required for the effect itself).
+Text bloom: Primary labels are drawn on a tk.Canvas using layered create_text
+            calls at ±1 px offsets in progressively dimmer glow colours, then
+            the sharp foreground text on top.  Uses tkfont to measure text so
+            no probe widget is needed (eliminating the white-flash bug).
+            No PIL, no numpy required for the effect.
 
 Removed: all numpy/PIL vignette and bloom image-processing code.
 """
 
 import tkinter as tk
+import tkinter.font as tkfont
 import threading
 import json
 import os
@@ -26,57 +28,62 @@ from spotify_api import SpotifyAPI
 FONT = "Courier New"
 
 
+def _dim_color(hex_color: str, factor: float) -> str:
+    """Multiply each RGB channel by factor (0–1) and return a hex string."""
+    h = hex_color.lstrip("#")
+    r = int(int(h[0:2], 16) * factor)
+    g = int(int(h[2:4], 16) * factor)
+    b = int(int(h[4:6], 16) * factor)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 # ── GlowLabel — Canvas-backed text with phosphor bloom ───────────────────────
 
 class GlowLabel(tk.Canvas):
     """
     Renders text with a CRT phosphor-bloom glow using only tkinter Canvas.
 
-    Technique: draw the same text multiple times at ±1 and ±2 px offsets in
-    a dimmed accent colour with decreasing stipple densities, then draw the
-    sharp foreground text on top.  No PIL compositing required.
+    Bloom layers (outermost → innermost, then sharp text on top):
+      offset 2 px — glow at 25 % brightness  (faint outer halo)
+      offset 1 px — glow at 55 % brightness  (mid halo)
+      offset 0 px — sharp fg text            (crisp centre)
 
-    stipple patterns used (tkinter built-ins):
-        "gray50"  — 50 % transparent  (densest halo, innermost ring)
-        "gray25"  — 25 % transparent  (mid halo)
-        "gray12"  — 12 % transparent  (outermost, barely-there ring)
+    No probe widget, no stipple — uses tkfont.Font to measure text size
+    directly, so there is no white-flash artefact.
     """
 
-    # (offset_px, stipple) pairs, outermost → innermost
-    HALO_RINGS = [
-        (2, "gray12"),
-        (1, "gray25"),
-        (1, "gray50"),
-    ]
-
-    def __init__(self, parent, text, font, fg, glow_color, bg, **kwargs):
-        # Measure the natural label size so the Canvas wraps tightly
-        probe = tk.Label(parent, text=text, font=font)
-        probe.update_idletasks()
-        w = probe.winfo_reqwidth()
-        h = probe.winfo_reqheight()
-        probe.destroy()
+    def __init__(self, parent, text, font_spec, fg, glow_color, bg, **kwargs):
+        # Measure text without creating a visible widget
+        f   = tkfont.Font(font=font_spec)
+        tw  = f.measure(text)
+        th  = f.metrics("linespace")
+        pad = 4                          # extra px each side so glow isn't clipped
+        w   = tw + pad * 2
+        h   = th + pad * 2
 
         super().__init__(parent, width=w, height=h, bg=bg,
                          highlightthickness=0, borderwidth=0, **kwargs)
 
-        cx, cy = w // 2, h // 2
+        x, y = pad, pad   # anchor NW so layout managers size correctly
 
-        # Draw halo rings from outermost inward
-        for offset, stipple in self.HALO_RINGS:
-            for dx in range(-offset, offset + 1):
-                for dy in range(-offset, offset + 1):
-                    if dx == 0 and dy == 0:
-                        continue
-                    self.create_text(
-                        cx + dx, cy + dy,
-                        text=text, font=font,
-                        fill=glow_color, stipple=stipple,
-                        anchor=tk.CENTER,
-                    )
+        # Outer halo — very dim
+        dim_far = _dim_color(glow_color, 0.25)
+        for dx in (-2, -1, 0, 1, 2):
+            for dy in (-2, -1, 0, 1, 2):
+                if dx == 0 and dy == 0:
+                    continue
+                self.create_text(x + dx, y + dy, text=text, font=font_spec,
+                                 fill=dim_far, anchor=tk.NW)
 
-        # Sharp primary text on top
-        self.create_text(cx, cy, text=text, font=font, fill=fg, anchor=tk.CENTER)
+        # Inner halo — medium brightness
+        dim_near = _dim_color(glow_color, 0.55)
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                       (-1, -1), (1, -1), (-1, 1), (1, 1)]:
+            self.create_text(x + dx, y + dy, text=text, font=font_spec,
+                             fill=dim_near, anchor=tk.NW)
+
+        # Sharp foreground text on top
+        self.create_text(x, y, text=text, font=font_spec, fill=fg, anchor=tk.NW)
 
 
 # ── Main widget ───────────────────────────────────────────────────────────────
@@ -467,7 +474,7 @@ class SpotifyWidget:
                     fg=None, glow=None, bg=None, cursor=""):
         """GlowLabel for primary text — artist names, song titles."""
         return GlowLabel(
-            parent, text=text, font=font,
+            parent, text=text, font_spec=font,
             fg=fg   or self.fg_color,
             glow_color=glow or self.accent_color,
             bg=bg   or self.tertiary_bg,
