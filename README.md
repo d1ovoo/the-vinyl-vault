@@ -23,8 +23,8 @@ A desktop application that displays your top 5 most listened artists and songs f
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/d1ovoo/spotify-dashboard.git
-cd spotify-dashboard
+git clone https://github.com/d1ovoo/the-vinyl-vault
+cd the-vinyl-vault
 ```
 
 2. Install dependencies:
@@ -57,10 +57,12 @@ The GUI will open with buttons to authenticate with Spotify and display your top
 ## Project Structure
 
 ```
-spotify-dashboard/
+the-vinyl-vault/
 ├── main.py                 # Main GUI application
 ├── spotify_auth.py         # Spotify authentication logic
 ├── spotify_api.py          # Spotify API interactions
+├── spotify_auth.py         # Spotify API authorization
+├── widget_config.json      # Location and theme of the widget
 ├── requirements.txt        # Python dependencies
 ├── .env.example           # Example environment variables
 └── README.md              # This file
