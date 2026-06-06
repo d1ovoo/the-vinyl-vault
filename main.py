@@ -212,9 +212,6 @@ class SpotifyWidget:
         self.apply_theme_colors()
         self._show_loading("CONNECTING TO SPOTIFY...")
         self.authenticate()
-        self._crt_overlay   = None
-        self._overlay_photo = None
-        self.root.after(400, self._make_crt_overlay)
 
     # ── Settings persistence ──────────────────────────────────────────────────
 
@@ -270,7 +267,6 @@ class SpotifyWidget:
                 getattr(self, attr).configure(bg=self.tertiary_bg)
 
     def change_palette(self, palette_name):
-        self._destroy_crt_overlay()
         reopen = self.settings_open
         self.current_palette = palette_name
         self.setup_styles()
@@ -286,7 +282,6 @@ class SpotifyWidget:
             self.display_songs()
         if reopen:
             self.open_settings()
-        self.root.after(100, self._make_crt_overlay)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -835,139 +830,6 @@ class SpotifyWidget:
             color = self.accent_color if i < filled else self.bg_color
             canvas.create_rectangle(0, y_top, width, y_top + block_h,
                                     fill=color, outline=self.secondary_bg)
-
-
-    # ── Full-window CRT vignette overlay ─────────────────────────────────────
-
-    def _make_crt_overlay(self):
-        """
-        Spawn a borderless always-on-top Toplevel that sits pixel-perfectly
-        over the main widget and renders a full-window vignette.
-
-        Windows : -transparentcolor + WS_EX_TRANSPARENT (fully click-through).
-        macOS   : -transparent + event forwarding for drag/scroll.
-        Linux   : skipped — no reliable per-pixel alpha without a compositor.
-        """
-        import platform
-        self._destroy_crt_overlay()
-
-        w, h     = self.widget_width, self.widget_height
-        sys_name = platform.system()
-
-        # ── Build vignette alpha mask ─────────────────────────────────
-        # Invert the Gaussian: 0 at centre (transparent) → 1 at corners (opaque dark)
-        mask  = self._make_vignette_mask(w, h, sigma_factor=0.52)
-        edge  = np.power(np.clip(1.0 - mask, 0, 1), 1.5).astype(np.float32)
-        alpha = (edge * 210).clip(0, 255).astype(np.uint8)   # ≤210/255 at corners
-
-        rgba_arr          = np.zeros((h, w, 4), dtype=np.uint8)
-        rgba_arr[:, :, 3] = alpha
-        rgba_pil          = Image.fromarray(rgba_arr, "RGBA")
-
-        try:
-            ov = tk.Toplevel(self.root)
-            ov.overrideredirect(True)
-            ov.attributes("-topmost", True)
-            ov.resizable(False, False)
-
-            if sys_name == "Windows":
-                # Any pixel drawn in CHROMA becomes fully transparent to the eye
-                # and fully click-through via WS_EX_TRANSPARENT below.
-                CHROMA = "#010101"
-                ov.attributes("-transparentcolor", CHROMA)
-                ov.configure(bg=CHROMA)
-                cvs = tk.Canvas(ov, width=w, height=h,
-                                bg=CHROMA, highlightthickness=0)
-
-                # Convert RGBA → RGB: centre pixels → CHROMA, edge pixels → black
-                a_f     = alpha[:, :, None].astype(np.float32) / 255.0
-                rgb_arr = (
-                    np.array([0, 0, 0], dtype=np.float32) * a_f +
-                    np.array([1, 1, 1], dtype=np.float32) * (1.0 - a_f)
-                ).clip(0, 255).astype(np.uint8)
-                photo = ImageTk.PhotoImage(Image.fromarray(rgb_arr, "RGB"))
-
-                # Make the overlay window fully click-through via Win32 API
-                try:
-                    import ctypes
-                    GWL_EXSTYLE       = -20
-                    WS_EX_LAYERED     = 0x00080000
-                    WS_EX_TRANSPARENT = 0x00000020
-                    hwnd  = ov.winfo_id()
-                    style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-                    ctypes.windll.user32.SetWindowLongW(
-                        hwnd, GWL_EXSTYLE,
-                        style | WS_EX_LAYERED | WS_EX_TRANSPARENT,
-                    )
-                except Exception as ce:
-                    print(f"WS_EX_TRANSPARENT unavailable ({ce}); falling back to event forwarding")
-                    self._bind_overlay_passthrough(ov)
-
-            elif sys_name == "Darwin":
-                ov.attributes("-transparent", True)
-                ov.configure(bg="systemTransparent")
-                cvs   = tk.Canvas(ov, width=w, height=h,
-                                  bg="systemTransparent", highlightthickness=0)
-                photo = ImageTk.PhotoImage(rgba_pil)
-                self._bind_overlay_passthrough(ov)
-
-            else:
-                # Linux: no reliable per-pixel alpha — skip silently
-                ov.destroy()
-                return
-
-            cvs.pack()
-            cvs.create_image(0, 0, anchor=tk.NW, image=photo)
-
-            self._overlay_photo = photo        # prevent GC
-            self._crt_overlay   = ov
-            self._position_crt_overlay()
-            self.root.bind("<Configure>", self._sync_overlay_pos, add="+")
-
-        except Exception as e:
-            print(f"CRT overlay skipped: {e}")
-            self._destroy_crt_overlay()
-
-    def _bind_overlay_passthrough(self, ov):
-        """Forward drag/scroll events from the overlay to the root window."""
-        for ev in ("<Button-1>", "<B1-Motion>", "<ButtonRelease-1>", "<MouseWheel>"):
-            ov.bind(ev, lambda e, s=ev: self._fwd_overlay(e, s))
-
-    def _fwd_overlay(self, event, event_str):
-        try:
-            rx = event.x_root - self.root.winfo_x()
-            ry = event.y_root - self.root.winfo_y()
-            self.root.event_generate(
-                event_str, x=rx, y=ry,
-                rootx=event.x_root, rooty=event.y_root,
-            )
-        except Exception:
-            pass
-
-    def _position_crt_overlay(self):
-        ov = getattr(self, "_crt_overlay", None)
-        if ov:
-            try:
-                ov.geometry(
-                    f"{self.widget_width}x{self.widget_height}"
-                    f"+{self.root.winfo_x()}+{self.root.winfo_y()}"
-                )
-            except Exception:
-                pass
-
-    def _sync_overlay_pos(self, event):
-        if event.widget is self.root:
-            self._position_crt_overlay()
-
-    def _destroy_crt_overlay(self):
-        ov = getattr(self, "_crt_overlay", None)
-        if ov:
-            try:
-                ov.destroy()
-            except Exception:
-                pass
-        self._crt_overlay   = None
-        self._overlay_photo = None
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
