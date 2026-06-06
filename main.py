@@ -2,13 +2,12 @@
 Spotify Dashboard Widget — Retro Pixel Edition
 Pixelated checkered background, CRT-style themes, Courier New font throughout.
 
-Vignette: Gaussian-kernel method (GeeksforGeeks / OpenCV style) applied directly
-          to pixel data — no overlay canvas.  Uses numpy; cv2 not required.
-          Background sigma_factor=0.38 (tight, heavy dark border).
-          Album-art sigma_factor=0.50 (moderate edge darkening).
-Bloom:    Soft glow halo composited behind album-art images via PIL.
-          bloom_radius=10, bloom_strength=0.80 for a pronounced CRT glow.
-Scanlines: Every 2nd row dimmed 22 % (factor 0.78) to simulate phosphor gaps.
+Text bloom: Each primary label uses GlowLabel — a Canvas widget that renders
+            the text at small offsets in a stippled accent colour beneath the
+            sharp foreground text, producing a soft phosphor-glow effect native
+            to tkinter (no PIL, no numpy required for the effect itself).
+
+Removed: all numpy/PIL vignette and bloom image-processing code.
 """
 
 import tkinter as tk
@@ -18,15 +17,69 @@ import os
 import webbrowser
 from io import BytesIO
 
-import numpy as np
 import requests
-from PIL import Image, ImageDraw, ImageFilter, ImageEnhance, ImageTk
+from PIL import Image, ImageTk
 from spotify_auth import SpotifyAuthenticator
 from spotify_api import SpotifyAPI
 
 
 FONT = "Courier New"
 
+
+# ── GlowLabel — Canvas-backed text with phosphor bloom ───────────────────────
+
+class GlowLabel(tk.Canvas):
+    """
+    Renders text with a CRT phosphor-bloom glow using only tkinter Canvas.
+
+    Technique: draw the same text multiple times at ±1 and ±2 px offsets in
+    a dimmed accent colour with decreasing stipple densities, then draw the
+    sharp foreground text on top.  No PIL compositing required.
+
+    stipple patterns used (tkinter built-ins):
+        "gray50"  — 50 % transparent  (densest halo, innermost ring)
+        "gray25"  — 25 % transparent  (mid halo)
+        "gray12"  — 12 % transparent  (outermost, barely-there ring)
+    """
+
+    # (offset_px, stipple) pairs, outermost → innermost
+    HALO_RINGS = [
+        (2, "gray12"),
+        (1, "gray25"),
+        (1, "gray50"),
+    ]
+
+    def __init__(self, parent, text, font, fg, glow_color, bg, **kwargs):
+        # Measure the natural label size so the Canvas wraps tightly
+        probe = tk.Label(parent, text=text, font=font)
+        probe.update_idletasks()
+        w = probe.winfo_reqwidth()
+        h = probe.winfo_reqheight()
+        probe.destroy()
+
+        super().__init__(parent, width=w, height=h, bg=bg,
+                         highlightthickness=0, borderwidth=0, **kwargs)
+
+        cx, cy = w // 2, h // 2
+
+        # Draw halo rings from outermost inward
+        for offset, stipple in self.HALO_RINGS:
+            for dx in range(-offset, offset + 1):
+                for dy in range(-offset, offset + 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    self.create_text(
+                        cx + dx, cy + dy,
+                        text=text, font=font,
+                        fill=glow_color, stipple=stipple,
+                        anchor=tk.CENTER,
+                    )
+
+        # Sharp primary text on top
+        self.create_text(cx, cy, text=text, font=font, fill=fg, anchor=tk.CENTER)
+
+
+# ── Main widget ───────────────────────────────────────────────────────────────
 
 class SpotifyWidget:
     """Retro Pixel Spotify Dashboard Widget"""
@@ -107,7 +160,7 @@ class SpotifyWidget:
         {"name": "Heat Waves",           "artist": "Glass Animals",                  "album": "Dreamland",               "popularity": 88, "url": "https://open.spotify.com/track/2takcwFXGpVSXi3R"},
         {"name": "Sunroof",              "artist": "Nicky Youre",                    "album": "Sunroof",                 "popularity": 87, "url": "https://open.spotify.com/track/4rVrcmK72nG8eQ5B"},
         {"name": "Running Up That Hill", "artist": "Kate Bush",                      "album": "Stranger Things Vol. 1",  "popularity": 90, "url": "https://open.spotify.com/track/4cOdK2wGLETKBW3P"},
-        {"name": "Flowers",             "artist": "Miley Cyrus",                    "album": "Endless Summer Vacation", "popularity": 91, "url": "https://open.spotify.com/track/4rVrcmK72nG8eQ5Bo"},
+        {"name": "Flowers",              "artist": "Miley Cyrus",                    "album": "Endless Summer Vacation", "popularity": 91, "url": "https://open.spotify.com/track/4rVrcmK72nG8eQ5Bo"},
         {"name": "Industry Baby",        "artist": "Lil Nas X & Jack Harlow",        "album": "Montero",                 "popularity": 85, "url": "https://open.spotify.com/track/2takcwFXGpVSXi3R"},
         {"name": "Vampire",              "artist": "Olivia Rodrigo",                 "album": "GUTS",                    "popularity": 84, "url": "https://open.spotify.com/track/2takcwFXGpVSXi3R"},
         {"name": "Dance the Night",      "artist": "Dua Lipa",                       "album": "Barbie The Album",        "popularity": 89, "url": "https://open.spotify.com/track/2takcwFXGpVSXi3R"},
@@ -128,37 +181,6 @@ class SpotifyWidget:
     def _hex_to_rgb(hex_color: str):
         h = hex_color.lstrip("#")
         return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-
-    # ── Vignette mask (GFG / OpenCV Gaussian kernel method) ──────────────────
-
-    @staticmethod
-    def _make_vignette_mask(w: int, h: int, sigma_factor: float = 0.55) -> np.ndarray:
-        """
-        Build a 2-D Gaussian vignette mask normalised to [0, 1].
-
-        Mirrors the GeeksforGeeks / OpenCV approach exactly:
-          X_kernel = getGaussianKernel(cols, sigma)
-          Y_kernel = getGaussianKernel(rows, sigma)
-          mask     = Y_kernel * X_kernel.T          (outer product)
-          mask     = mask / norm(mask)              (normalise)
-
-        sigma_factor controls the brightness falloff:
-          lower  → tighter bright centre, heavier dark border
-          higher → gentler, wider bright area
-        """
-        sigma_x = w * sigma_factor
-        sigma_y = h * sigma_factor
-
-        x = np.arange(w, dtype=np.float64)
-        y = np.arange(h, dtype=np.float64)
-
-        kx = np.exp(-((x - w / 2) ** 2) / (2 * sigma_x ** 2))
-        ky = np.exp(-((y - h / 2) ** 2) / (2 * sigma_y ** 2))
-
-        mask = np.outer(ky, kx)            # h × w
-        mask /= np.linalg.norm(mask)       # normalise
-        mask /= mask.max()                 # rescale peak to 1.0
-        return mask.astype(np.float32)
 
     # ── Init ──────────────────────────────────────────────────────────────────
 
@@ -185,8 +207,6 @@ class SpotifyWidget:
         self.demo_mode          = False
         self.image_cache        = {}
         self.item_images        = []
-        # hold references to background PhotoImages so GC doesn't collect them
-        self._bg_photos         = {}
 
         self.config_file = "widget_config.json"
         self.settings    = self.load_settings()
@@ -271,7 +291,6 @@ class SpotifyWidget:
         self.current_palette = palette_name
         self.setup_styles()
         self.image_cache.clear()
-        self._bg_photos.clear()
         for w in self.root.winfo_children():
             w.destroy()
         self.root.configure(bg=self.panel_bg)
@@ -392,98 +411,37 @@ class SpotifyWidget:
                 fg=self._contrast_fg(self.accent_color) if active else self.fg_color,
             )
 
-    # ── Vignette'd checkered background ───────────────────────────────────────
+    # ── Checkered background ──────────────────────────────────────────────────
 
     def _draw_checkered_bg(self, canvas, canvas_key: str):
         """
-        Render the checker pattern as a numpy pixel array, multiply every
-        channel by the Gaussian vignette mask, then place a single PhotoImage
-        on the canvas — no overlay, the effect is baked into the pixels.
+        Draw a pixel-art checker pattern on the canvas using rectangles.
+        No image compositing or post-processing.
         """
-        canvas.delete("bg_img")
+        canvas.delete("bg_tile")
 
-        w   = self.widget_width
-        n   = max(len(self.artists_data), len(self.tracks_data), 15)
-        h   = n * 62 + self.content_height
-        sz  = 8
+        w  = self.widget_width
+        n  = max(len(self.artists_data), len(self.tracks_data), 15)
+        h  = n * 62 + self.content_height
+        sz = 8
 
-        c1 = np.array(self._hex_to_rgb(self.palette.get("check1", self.tertiary_bg)), dtype=np.float32)
-        c2 = np.array(self._hex_to_rgb(self.palette.get("check2", self.bg_color)),    dtype=np.float32)
+        c1 = self.palette.get("check1", self.tertiary_bg)
+        c2 = self.palette.get("check2", self.bg_color)
 
-        # Build checker via index arithmetic — no Python loops
-        row_idx = np.arange(h) // sz          # shape (h,)
-        col_idx = np.arange(w) // sz          # shape (w,)
-        grid    = (row_idx[:, None] + col_idx[None, :]) % 2   # h × w, values {0,1}
+        rows = h // sz + 1
+        cols = w // sz + 1
+        for r in range(rows):
+            for c in range(cols):
+                color = c1 if (r + c) % 2 == 0 else c2
+                x0, y0 = c * sz, r * sz
+                canvas.create_rectangle(x0, y0, x0 + sz, y0 + sz,
+                                        fill=color, outline="", tags="bg_tile")
+        canvas.tag_lower("bg_tile")
 
-        # Broadcast: where grid==0 use c1, else c2  →  h × w × 3
-        img_arr = np.where(grid[:, :, None] == 0, c1, c2).astype(np.float32)
-
-        # Gaussian vignette mask  (GFG method, sigma tuned to viewport size so
-        # the effect is visible even when scrolled — we use content_height × w)
-        mask = self._make_vignette_mask(w, self.content_height, sigma_factor=0.38)
-
-        # Tile the mask vertically to cover the full scroll height
-        repeats = int(np.ceil(h / self.content_height))
-        tall_mask = np.tile(mask, (repeats, 1))[:h, :]    # h × w
-
-        # Multiply each channel by the mask
-        img_arr *= tall_mask[:, :, None]
-
-        # ── CRT scanlines: darken every 2nd row to mimic phosphor line gaps ──
-        scanlines         = np.ones((h, 1, 1), dtype=np.float32)
-        scanlines[1::2]   = 0.78          # odd rows dimmed ~22 %
-        img_arr          *= scanlines
-
-        img_arr  = np.clip(img_arr, 0, 255).astype(np.uint8)
-
-        photo = ImageTk.PhotoImage(Image.fromarray(img_arr, "RGB"))
-        self._bg_photos[canvas_key] = photo          # keep reference
-        canvas.create_image(0, 0, anchor=tk.NW, image=photo, tags="bg_img")
-        canvas.tag_lower("bg_img")
-
-    # ── Bloom + vignette on album art ────────────────────────────────────────
-
-    def _apply_vignette_to_image(self, arr: np.ndarray) -> np.ndarray:
-        """
-        Apply the Gaussian vignette mask to an RGB uint8 numpy array in-place.
-        Returns the modified array.
-        """
-        h, w = arr.shape[:2]
-        mask = self._make_vignette_mask(w, h, sigma_factor=0.50)
-        out  = arr.astype(np.float32)
-        out *= mask[:, :, None]
-        return np.clip(out, 0, 255).astype(np.uint8)
-
-    def _apply_bloom(self, pil_img, size=38, bloom_radius=7, bloom_strength=0.55):
-        """
-        Composite a soft Gaussian bloom halo behind the sharp image.
-        Returns a padded RGBA PIL Image; the transparent padding carries the glow.
-        """
-        pad   = bloom_radius * 2
-        total = size + pad * 2
-
-        sharp = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        rgba  = pil_img.convert("RGBA")
-        rgba.thumbnail((size, size), Image.LANCZOS)
-        sharp.paste(rgba, ((size - rgba.width) // 2, (size - rgba.height) // 2), rgba)
-
-        src   = Image.new("RGBA", (total, total), (0, 0, 0, 0))
-        src.paste(sharp, (pad, pad), sharp)
-
-        bloom = src.filter(ImageFilter.GaussianBlur(radius=bloom_radius))
-        bloom = ImageEnhance.Brightness(bloom).enhance(1.0 + bloom_strength)
-        bloom = bloom.filter(ImageFilter.GaussianBlur(radius=bloom_radius // 2))
-
-        result = Image.new("RGBA", (total, total), (0, 0, 0, 0))
-        result.paste(bloom, (0, 0), bloom)
-        result.paste(sharp, (pad, pad), sharp)
-        return result
+    # ── Image loading ─────────────────────────────────────────────────────────
 
     def load_item_image(self, image_url, size=38):
-        """
-        Fetch image → apply Gaussian vignette to its pixels → composite bloom halo.
-        Returns an ImageTk.PhotoImage.
-        """
+        """Fetch and resize album/artist art. No compositing effects."""
         if not image_url:
             return None
         key = (image_url, size)
@@ -492,29 +450,41 @@ class SpotifyWidget:
         try:
             resp = requests.get(image_url, timeout=5)
             resp.raise_for_status()
-            pil_img = Image.open(BytesIO(resp.content))
-
-            # Step 1: square + resize
-            rgb = pil_img.convert("RGB")
-            rgb.thumbnail((size, size), Image.LANCZOS)
-            square = Image.new("RGB", (size, size), self._hex_to_rgb(self.tertiary_bg))
-            square.paste(rgb, ((size - rgb.width) // 2, (size - rgb.height) // 2))
-
-            # Step 2: apply Gaussian vignette directly to pixel data
-            arr         = np.array(square)
-            arr         = self._apply_vignette_to_image(arr)
-            vignette_pil = Image.fromarray(arr, "RGB")
-
-            # Step 3: bloom halo composited behind the now-vignette'd image
-            bloomed = self._apply_bloom(vignette_pil, size=size,
-                                        bloom_radius=10, bloom_strength=0.80)
-
-            photo = ImageTk.PhotoImage(bloomed)
+            pil_img = Image.open(BytesIO(resp.content)).convert("RGB")
+            pil_img.thumbnail((size, size), Image.LANCZOS)
+            bg = Image.new("RGB", (size, size), self._hex_to_rgb(self.tertiary_bg))
+            bg.paste(pil_img, ((size - pil_img.width) // 2, (size - pil_img.height) // 2))
+            photo = ImageTk.PhotoImage(bg)
             self.image_cache[key] = photo
             return photo
         except Exception as e:
             print(f"Image load error: {e}")
             return None
+
+    # ── Glow / dim label factories ────────────────────────────────────────────
+
+    def _glow_label(self, parent, text, font,
+                    fg=None, glow=None, bg=None, cursor=""):
+        """GlowLabel for primary text — artist names, song titles."""
+        return GlowLabel(
+            parent, text=text, font=font,
+            fg=fg   or self.fg_color,
+            glow_color=glow or self.accent_color,
+            bg=bg   or self.tertiary_bg,
+            cursor=cursor,
+        )
+
+    def _dim_label(self, parent, text, font,
+                   fg=None, bg=None, wraplength=None, cursor=""):
+        """Plain tk.Label for secondary text — no bloom needed."""
+        kw = {"wraplength": wraplength} if wraplength else {}
+        return tk.Label(
+            parent, text=text, font=font,
+            bg=bg or self.tertiary_bg,
+            fg=fg or self.text_secondary,
+            justify=tk.LEFT, anchor=tk.W,
+            cursor=cursor, **kw,
+        )
 
     # ── Settings panel ────────────────────────────────────────────────────────
 
@@ -774,11 +744,14 @@ class SpotifyWidget:
         info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6)
 
         artist_url = artist.get("url", "#")
-        lbl = tk.Label(info, text=f"> {artist['name']}", font=(FONT, 8, "bold"),
-                       bg=row_bg, fg=self.fg_color, wraplength=230,
-                       justify=tk.LEFT, anchor=tk.W, cursor="hand2")
-        lbl.place(relx=0, rely=0.5, anchor=tk.W)
-        lbl.bind("<Button-1>", lambda e: webbrowser.open(artist_url) if artist_url != "#" else None)
+        # ── GlowLabel for artist name ──────────────────────────────────────
+        name_lbl = self._glow_label(
+            info, text=f"> {artist['name']}",
+            font=(FONT, 8, "bold"), cursor="hand2",
+        )
+        name_lbl.place(relx=0, rely=0.5, anchor=tk.W)
+        if artist_url != "#":
+            name_lbl.bind("<Button-1>", lambda e: webbrowser.open(artist_url))
 
     def _create_track_row(self, rank, track):
         row_bg = self.tertiary_bg
@@ -804,18 +777,24 @@ class SpotifyWidget:
         info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=4)
 
         song_url = track.get("url", "#")
-        slbl = tk.Label(info, text=f"> {track['name']}", font=(FONT, 8, "bold"),
-                        bg=row_bg, fg=self.fg_color, wraplength=220,
-                        justify=tk.LEFT, anchor=tk.W, cursor="hand2")
-        slbl.pack(anchor=tk.W)
-        slbl.bind("<Button-1>", lambda e: webbrowser.open(song_url) if song_url != "#" else None)
+        # ── GlowLabel for song title ───────────────────────────────────────
+        song_lbl = self._glow_label(
+            info, text=f"> {track['name']}",
+            font=(FONT, 8, "bold"), cursor="hand2",
+        )
+        song_lbl.pack(anchor=tk.W)
+        if song_url != "#":
+            song_lbl.bind("<Button-1>", lambda e: webbrowser.open(song_url))
 
+        # Plain dim label for artist sub-line (no bloom — keeps it legible)
         artist_url = track.get("artist_url", "#")
-        albl = tk.Label(info, text=track["artist"], font=(FONT, 6),
-                        bg=row_bg, fg=self.text_secondary, wraplength=240,
-                        justify=tk.LEFT, anchor=tk.W, cursor="hand2")
+        albl = self._dim_label(
+            info, text=track["artist"], font=(FONT, 6),
+            wraplength=240, cursor="hand2",
+        )
         albl.pack(anchor=tk.W)
-        albl.bind("<Button-1>", lambda e: webbrowser.open(artist_url) if artist_url != "#" else None)
+        if artist_url != "#":
+            albl.bind("<Button-1>", lambda e: webbrowser.open(artist_url))
 
     def _draw_pixel_bar(self, parent, value: int, width: int = 24):
         blocks  = 10
