@@ -15,7 +15,6 @@ import requests
 from PIL import Image, ImageDraw, ImageTk
 from spotify_auth import SpotifyAuthenticator
 from spotify_api import SpotifyAPI
-from fisheye_overlay import FisheyeOverlay   # ← CHANGE 1: new import
 
 
 # ─── Retro font ─────────────────────────────────────────────────────────────
@@ -25,6 +24,10 @@ FONT = "Courier New"
 class SpotifyWidget:
     """Retro Pixel Spotify Dashboard Widget"""
 
+    # ── Color palettes (retro CRT themes) ────────────────────────────────────
+    # IMPORTANT: accent is always visually distinct from bg so selected-button
+    # text is never invisible.  _contrast_fg() picks black or white text
+    # dynamically for any button background.
     PALETTES = {
         "terminal": {
             "name": "Terminal",
@@ -72,6 +75,7 @@ class SpotifyWidget:
         },
     }
 
+    # ── Demo data ─────────────────────────────────────────────────────────────
     DEMO_ARTISTS = [
         {"name": "The Weeknd",       "genres": "synth-pop, pop",          "popularity": 92, "url": "https://open.spotify.com/artist/1Xyo4u8uIGMw73CxIaXvj"},
         {"name": "Drake",             "genres": "hip-hop, rap",            "popularity": 88, "url": "https://open.spotify.com/artist/7dGJo4pcD2V6oG8kP0tJt"},
@@ -112,16 +116,13 @@ class SpotifyWidget:
 
     @staticmethod
     def _contrast_fg(hex_color: str) -> str:
+        """Return '#000000' or '#FFFFFF' for best contrast against hex_color."""
         h = hex_color.lstrip("#")
         if len(h) != 6:
             return "#FFFFFF"
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
         return "#000000" if luminance > 0.5 else "#FFFFFF"
-
-    # ── CHANGE 2: _apply_fisheye() removed entirely ───────────────────────────
-    # The CRT bulge is now handled by FisheyeOverlay (fisheye_overlay.py)
-    # which distorts the whole window, not individual images.
 
     # ── Init ───────────────────────────────────────────────────────────────
 
@@ -149,13 +150,11 @@ class SpotifyWidget:
         self.demo_mode     = False
         self.image_cache   = {}
         self.item_images   = []
-        self.fisheye_enabled = True
 
         # Settings
         self.config_file = "widget_config.json"
         self.settings    = self.load_settings()
         self.current_palette = self.settings.get("palette", "terminal")
-        self.fisheye_enabled = self.settings.get("fisheye", True)
         if self.current_palette not in self.PALETTES:
             self.current_palette = "terminal"
 
@@ -164,6 +163,7 @@ class SpotifyWidget:
         # Window
         self.root.geometry(f"{self.widget_width}x{self.widget_height}")
         self.root.resizable(False, False)
+        # Borderless widget — sharp square corners for the retro look.
         self.root.overrideredirect(True)
         self.root.configure(bg=self.panel_bg)
 
@@ -178,27 +178,14 @@ class SpotifyWidget:
 
         self.apply_theme_colors()
 
-        # Demo data
-        self.demo_mode    = True
-        self.artists_data = self.DEMO_ARTISTS
-        self.tracks_data  = self.DEMO_TRACKS
-        self.display_artists()
-        self.display_songs()
-        print("Widget loaded with demo data!")
-
-        # ── CHANGE 3: whole-widget CRT fisheye overlay ────────────────────
-        # Created last so it sits on top of everything; enabled state comes
-        # from saved settings.
-        self._fisheye_overlay = FisheyeOverlay(
-            self.root, enabled=self.fisheye_enabled
-        )
-
-        # self.authenticate()   # Uncomment to enable live Spotify data
+        # Start in loading state, then authenticate
+        self._show_loading("CONNECTING TO SPOTIFY...")
+        self.authenticate()
 
     # ── Settings persistence ──────────────────────────────────────────────────
 
     def load_settings(self):
-        defaults = {"palette": "terminal", "x": None, "y": None, "fisheye": True}
+        defaults = {"palette": "terminal", "x": None, "y": None}
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file) as f:
@@ -209,13 +196,13 @@ class SpotifyWidget:
 
     def save_settings(self):
         self.settings["palette"] = self.current_palette
-        self.settings["fisheye"] = self.fisheye_enabled
         self.settings["x"] = self.root.winfo_x()
         self.settings["y"] = self.root.winfo_y()
         with open(self.config_file, "w") as f:
             json.dump(self.settings, f, indent=2)
 
     def load_window_position(self):
+        """Default: bottom-right corner."""
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
@@ -264,14 +251,6 @@ class SpotifyWidget:
         if reopen:
             self.open_settings()
 
-    # ── CHANGE 4: toggle_fisheye — instant effect via overlay ─────────────────
-    def toggle_fisheye(self):
-        self.fisheye_enabled = not self.fisheye_enabled
-        self._fisheye_overlay.set_enabled(self.fisheye_enabled)
-        # Re-open settings panel so the ON/OFF label refreshes immediately
-        if self.settings_open:
-            self.open_settings()
-
     # ── UI construction ───────────────────────────────────────────────────────
 
     def create_ui(self):
@@ -282,6 +261,7 @@ class SpotifyWidget:
         self.content_settings_frame = tk.Frame(main_frame, bg=self.panel_bg)
         self.content_settings_frame.pack(fill=tk.BOTH, expand=True)
 
+        # Content area (list view)
         self.content_frame = tk.Frame(
             self.content_settings_frame, bg=self.tertiary_bg,
             height=self.content_height
@@ -289,6 +269,8 @@ class SpotifyWidget:
         self.content_frame.pack(fill=tk.BOTH, expand=True)
         self.content_frame.pack_propagate(False)
 
+        # ── Bottom control bar ─────────────────────────────────────────────
+        # Retro: thick top border in accent color
         border_line = tk.Frame(main_frame, bg=self.accent_color, height=2)
         border_line.pack(fill=tk.X, side=tk.BOTTOM)
 
@@ -316,6 +298,7 @@ class SpotifyWidget:
 
         self.update_control_states()
 
+        # ── Artists canvas ─────────────────────────────────────────────────
         self.artists_canvas = tk.Canvas(
             self.content_frame, bg=self.tertiary_bg,
             highlightthickness=0, borderwidth=0, relief="flat"
@@ -326,6 +309,7 @@ class SpotifyWidget:
             (0, 0), window=self.artists_content, anchor=tk.NW, width=self.widget_width
         )
 
+        # ── Songs canvas ───────────────────────────────────────────────────
         self.songs_canvas = tk.Canvas(
             self.content_frame, bg=self.tertiary_bg,
             highlightthickness=0, borderwidth=0, relief="flat"
@@ -341,11 +325,15 @@ class SpotifyWidget:
         }
 
         self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # Show artists canvas by default
         self.artists_canvas.pack(fill=tk.BOTH, expand=True)
 
+        # Settings panel (hidden by default)
         self.settings_frame = tk.Frame(self.content_settings_frame, bg=self.secondary_bg)
 
     def _make_btn(self, parent, text, command):
+        """Retro pixel-style control button."""
         fg = self._contrast_fg(self.tertiary_bg)
         return tk.Button(
             parent,
@@ -380,11 +368,15 @@ class SpotifyWidget:
                 fg=self._contrast_fg(self.accent_color) if active else self.fg_color,
             )
 
+    # ── Checkered background ──────────────────────────────────────────────────
+
     def _draw_checkered_bg(self, canvas):
+        """Draw a pixelated 8×8 checkered pattern on the canvas background."""
         canvas.delete("checker")
         c1 = self.palette.get("check1", self.tertiary_bg)
         c2 = self.palette.get("check2", self.bg_color)
         sz = 8
+        # Cover enough area for all items + some scroll room
         total_items = max(len(self.artists_data), len(self.tracks_data), 15)
         h = total_items * self.row_height + self.content_height
         w = self.widget_width + sz
@@ -421,6 +413,7 @@ class SpotifyWidget:
             w.destroy()
         self.settings_frame.pack(fill=tk.BOTH, expand=True)
 
+        # ── Title ─────────────────────────────────────────────────────────
         tk.Label(
             self.settings_frame,
             text="[ SETTINGS ]",
@@ -429,10 +422,12 @@ class SpotifyWidget:
             fg=self.fg_color,
         ).pack(pady=10)
 
+        # Retro separator
         tk.Frame(self.settings_frame, bg=self.accent_color, height=1).pack(
             fill=tk.X, padx=10, pady=(0, 8)
         )
 
+        # ── Color theme section ────────────────────────────────────────────
         tk.Label(
             self.settings_frame,
             text="> COLOR THEME",
@@ -448,7 +443,7 @@ class SpotifyWidget:
             pal     = self.PALETTES[pal_key]
             selected = pal_key == self.current_palette
             btn_bg  = self.accent_color if selected else self.tertiary_bg
-            btn_fg  = self._contrast_fg(btn_bg)
+            btn_fg  = self._contrast_fg(btn_bg)   # ← THE FIX: always readable
             tk.Button(
                 pal_frame,
                 text=pal["name"],
@@ -464,42 +459,11 @@ class SpotifyWidget:
                 command=lambda k=pal_key: self.change_palette(k),
             ).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
+        # ── Mode indicator ─────────────────────────────────────────────────
         tk.Frame(self.settings_frame, bg=self.accent_color, height=1).pack(
             fill=tk.X, padx=10, pady=4
         )
-
-        # ── CHANGE 4 continued: label reflects live state immediately ──────
-        fisheye_status = "ON" if self.fisheye_enabled else "OFF"
-        fisheye_color  = self.fg_color if self.fisheye_enabled else self.text_secondary
-        tk.Label(
-            self.settings_frame,
-            text=f"> FISHEYE: {fisheye_status}",
-            font=(FONT, 8),
-            bg=self.secondary_bg,
-            fg=fisheye_color,
-        ).pack(anchor=tk.W, padx=14, pady=(4, 4))
-
-        fisheye_btn_bg = self.accent_color if self.fisheye_enabled else self.tertiary_bg
-        fisheye_btn_fg = self._contrast_fg(fisheye_btn_bg)
-        tk.Button(
-            self.settings_frame,
-            text="TOGGLE FISHEYE",
-            font=(FONT, 7, "bold"),
-            bg=fisheye_btn_bg,
-            fg=fisheye_btn_fg,
-            activebackground=self.accent_color,
-            activeforeground=self._contrast_fg(self.accent_color),
-            border=1,
-            relief=tk.RAISED,
-            padx=6,
-            pady=3,
-            command=self.toggle_fisheye,
-        ).pack(padx=10, pady=(0, 10), fill=tk.X)
-
-        tk.Frame(self.settings_frame, bg=self.accent_color, height=1).pack(
-            fill=tk.X, padx=10, pady=4
-        )
-        mode_text  = "DEMO MODE" if self.demo_mode else "LIVE DATA"
+        mode_text = "DEMO MODE" if self.demo_mode else "LIVE DATA"
         mode_color = self.text_secondary if self.demo_mode else self.fg_color
         tk.Label(
             self.settings_frame,
@@ -509,6 +473,7 @@ class SpotifyWidget:
             fg=mode_color,
         ).pack(anchor=tk.W, padx=14, pady=4)
 
+        # ── Close button ───────────────────────────────────────────────────
         tk.Button(
             self.settings_frame,
             text="[ CLOSE ]",
@@ -585,6 +550,55 @@ class SpotifyWidget:
 
     # ── Spotify auth / data ───────────────────────────────────────────────────
 
+    def _show_loading(self, message="LOADING..."):
+        """Display a loading message in both canvases."""
+        for canvas, content in self.canvases.values():
+            for w in content.winfo_children():
+                w.destroy()
+            canvas.delete("all")
+            canvas.create_text(
+                self.widget_width // 2,
+                self.content_height // 2,
+                text=message,
+                font=(FONT, 9, "bold"),
+                fill=self.text_secondary,
+                anchor=tk.CENTER,
+            )
+
+    def _show_error(self, message):
+        """Display an error message with a retry button."""
+        for canvas, content in self.canvases.values():
+            for w in content.winfo_children():
+                w.destroy()
+            canvas.delete("all")
+            canvas.create_text(
+                self.widget_width // 2,
+                self.content_height // 2 - 24,
+                text=message,
+                font=(FONT, 8),
+                fill=self.fg_color,
+                anchor=tk.CENTER,
+                width=self.widget_width - 20,
+            )
+        visible_canvas, _ = self.canvases[self.current_tab]
+        btn = tk.Button(
+            visible_canvas,
+            text="[ RETRY ]",
+            font=(FONT, 8, "bold"),
+            bg=self.accent_color,
+            fg=self._contrast_fg(self.accent_color),
+            activebackground=self.fg_color,
+            activeforeground=self._contrast_fg(self.fg_color),
+            border=1,
+            relief=tk.RAISED,
+            command=lambda: [self._show_loading("CONNECTING TO SPOTIFY..."), self.authenticate()],
+        )
+        visible_canvas.create_window(
+            self.widget_width // 2,
+            self.content_height // 2 + 24,
+            window=btn,
+        )
+
     def authenticate(self):
         threading.Thread(target=self._authenticate_thread, daemon=True).start()
 
@@ -593,9 +607,11 @@ class SpotifyWidget:
             auth = SpotifyAuthenticator()
             self.sp_client = auth.get_spotify_client()
             self.sp_api    = SpotifyAPI(self.sp_client)
+            self.root.after(0, lambda: self._show_loading("FETCHING YOUR DATA..."))
             self.load_data()
         except Exception as e:
-            print(f"Auth error (demo mode): {e}")
+            print(f"Auth error: {e}")
+            self.root.after(0, lambda: self._show_error(f"AUTH FAILED\n{e}"))
 
     def load_data(self):
         if not self.sp_api:
@@ -607,15 +623,22 @@ class SpotifyWidget:
         try:
             artists = self.sp_api.get_top_artists(self.current_time_range, limit=15)
             tracks  = self.sp_api.get_top_tracks(self.current_time_range, limit=15)
-            if artists and tracks:
+            if artists:
                 self.artists_data = artists
-                self.tracks_data  = tracks
-                self.demo_mode    = False
                 self.root.after(0, self.display_artists)
+            if tracks:
+                self.tracks_data = tracks
                 self.root.after(0, self.display_songs)
-                print("Switched to live data!")
+            if artists or tracks:
+                self.demo_mode = False
+                print("Live data loaded!")
+            else:
+                self.root.after(0, lambda: self._show_error(
+                    "NO DATA RETURNED\nCheck your Spotify account has listening history."
+                ))
         except Exception as e:
-            print(f"Data load error (demo): {e}")
+            print(f"Data load error: {e}")
+            self.root.after(0, lambda: self._show_error(f"FAILED TO LOAD DATA\n{e}"))
         finally:
             self.loading = False
 
@@ -631,7 +654,8 @@ class SpotifyWidget:
         for idx, artist in enumerate(self.artists_data, 1):
             self._create_artist_row(idx, artist)
         self.artists_content.update_idletasks()
-        max_scroll_height = 15 * 62
+        # FIX: Limit scrollregion to max 15 items
+        max_scroll_height = 15 * 62  # row_height (58) + padding (4)
         self.artists_canvas.config(scrollregion=(0, 0, self.widget_width, max_scroll_height))
 
     def display_songs(self):
@@ -644,14 +668,14 @@ class SpotifyWidget:
         for idx, track in enumerate(self.tracks_data, 1):
             self._create_track_row(idx, track)
         self.songs_content.update_idletasks()
-        max_scroll_height = 15 * 62
+        # FIX: Limit scrollregion to max 15 items
+        max_scroll_height = 15 * 62  # row_height (58) + padding (4)
         self.songs_canvas.config(scrollregion=(0, 0, self.widget_width, max_scroll_height))
 
-    # ── CHANGE 5: load_item_image — fisheye removed from per-image logic ──────
     def load_item_image(self, image_url, size=38):
         if not image_url:
             return None
-        key = (image_url, size)          # fisheye_enabled removed from key
+        key = (image_url, size)
         if key in self.image_cache:
             return self.image_cache[key]
         try:
@@ -661,7 +685,7 @@ class SpotifyWidget:
             img.thumbnail((size, size), Image.LANCZOS)
             square = Image.new("RGB", (size, size), self.tertiary_bg)
             square.paste(img, ((size - img.width) // 2, (size - img.height) // 2))
-            # No per-image fisheye — the overlay handles the whole window
+            
             photo = ImageTk.PhotoImage(square)
             self.image_cache[key] = photo
             return photo
@@ -670,6 +694,11 @@ class SpotifyWidget:
             return None
 
     # ── Row builders ────────────────────────────────────────────────────────
+
+    def _row_bg(self, idx: int) -> str:
+        """Alternate slightly between two row shades for a retro scanline feel."""
+        # Even rows slightly lighter, based on tertiary_bg
+        return self.tertiary_bg
 
     def _create_artist_row(self, rank, artist):
         row_bg = self.tertiary_bg
@@ -682,6 +711,7 @@ class SpotifyWidget:
         frame.pack(fill=tk.X, padx=4, pady=2)
         frame.pack_propagate(False)
 
+        # Rank badge — retro block style
         rank_fg = self._contrast_fg(self.accent_color)
         tk.Label(
             frame,
@@ -693,15 +723,18 @@ class SpotifyWidget:
             relief=tk.FLAT,
         ).pack(side=tk.LEFT, padx=(4, 0), pady=6)
 
+        # Album/artist image (live data only)
         img = self.load_item_image(artist.get("image"))
         if img:
             lbl = tk.Label(frame, image=img, bg=row_bg, borderwidth=0)
             lbl.pack(side=tk.LEFT, padx=(4, 4), pady=4)
             self.item_images.append(img)
 
+        # Info
         info = tk.Frame(frame, bg=row_bg)
         info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=4)
 
+        # Clickable artist name
         artist_url = artist.get("url", "#")
         artist_name_lbl = tk.Label(
             info,
@@ -729,6 +762,7 @@ class SpotifyWidget:
                 anchor=tk.W,
             ).pack(anchor=tk.W)
 
+        # Popularity bar (pixel-style)
         pop = artist.get("popularity", 0)
         bar_frame = tk.Frame(frame, bg=row_bg)
         bar_frame.pack(side=tk.RIGHT, padx=6, pady=0, anchor=tk.CENTER)
@@ -745,6 +779,7 @@ class SpotifyWidget:
         frame.pack(fill=tk.X, padx=4, pady=2)
         frame.pack_propagate(False)
 
+        # Rank badge
         rank_fg = self._contrast_fg(self.accent_color)
         tk.Label(
             frame,
@@ -756,15 +791,18 @@ class SpotifyWidget:
             relief=tk.FLAT,
         ).pack(side=tk.LEFT, padx=(4, 0), pady=6)
 
+        # Album image (live data only)
         img = self.load_item_image(track.get("image"))
         if img:
             lbl = tk.Label(frame, image=img, bg=row_bg, borderwidth=0)
             lbl.pack(side=tk.LEFT, padx=(4, 4), pady=4)
             self.item_images.append(img)
 
+        # Info
         info = tk.Frame(frame, bg=row_bg)
         info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=4)
 
+        # Clickable song name
         song_url = track.get("url", "#")
         song_name_lbl = tk.Label(
             info,
@@ -780,6 +818,7 @@ class SpotifyWidget:
         song_name_lbl.pack(anchor=tk.W)
         song_name_lbl.bind("<Button-1>", lambda e: webbrowser.open(song_url) if song_url != "#" else None)
 
+        # Clickable artist name
         artist_url = track.get("artist_url", "#")
         artist_lbl = tk.Label(
             info,
@@ -795,17 +834,19 @@ class SpotifyWidget:
         artist_lbl.pack(anchor=tk.W)
         artist_lbl.bind("<Button-1>", lambda e: webbrowser.open(artist_url) if artist_url != "#" else None)
 
+        # Pixel popularity bar
         pop = track.get("popularity", 0)
         bar_frame = tk.Frame(frame, bg=row_bg)
         bar_frame.pack(side=tk.RIGHT, padx=6, pady=0, anchor=tk.CENTER)
         self._draw_pixel_bar(bar_frame, pop, width=24)
 
     def _draw_pixel_bar(self, parent, value: int, width: int = 24):
-        blocks  = 10
-        filled  = max(0, min(blocks, round(value / 10)))
-        block_h = 3
-        block_w = width
-        gap     = 1
+        """Draw a vertical pixel-block popularity bar (10 blocks tall)."""
+        blocks     = 10
+        filled     = max(0, min(blocks, round(value / 10)))
+        block_h    = 3
+        block_w    = width
+        gap        = 1
 
         canvas = tk.Canvas(
             parent,
@@ -831,11 +872,6 @@ def main():
     root = tk.Tk()
     app  = SpotifyWidget(root)
     root.mainloop()
-    # ── CHANGE 7: clean overlay shutdown ──────────────────────────────────
-    try:
-        app._fisheye_overlay.destroy()
-    except Exception:
-        pass
     app.save_settings()
 
 
