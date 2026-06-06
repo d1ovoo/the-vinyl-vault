@@ -774,23 +774,7 @@ class SpotifyWidget:
         artist_name_lbl.pack(anchor=tk.W)
         artist_name_lbl.bind("<Button-1>", lambda e: webbrowser.open(artist_url) if artist_url != "#" else None)
 
-        if artist.get("genres"):
-            tk.Label(
-                info,
-                text=artist["genres"],
-                font=(FONT, 6),
-                bg=row_bg,
-                fg=self.text_secondary,
-                wraplength=230,
-                justify=tk.LEFT,
-                anchor=tk.W,
-            ).pack(anchor=tk.W)
 
-        # Popularity bar (pixel-style)
-        pop = artist.get("popularity", 0)
-        bar_frame = tk.Frame(frame, bg=row_bg)
-        bar_frame.pack(side=tk.RIGHT, padx=6, pady=0, anchor=tk.CENTER)
-        self._draw_pixel_bar(bar_frame, pop, width=24)
 
     def _create_track_row(self, rank, track):
         row_bg = self.tertiary_bg
@@ -858,11 +842,7 @@ class SpotifyWidget:
         artist_lbl.pack(anchor=tk.W)
         artist_lbl.bind("<Button-1>", lambda e: webbrowser.open(artist_url) if artist_url != "#" else None)
 
-        # Pixel popularity bar
-        pop = track.get("popularity", 0)
-        bar_frame = tk.Frame(frame, bg=row_bg)
-        bar_frame.pack(side=tk.RIGHT, padx=6, pady=0, anchor=tk.CENTER)
-        self._draw_pixel_bar(bar_frame, pop, width=24)
+
 
     def _draw_pixel_bar(self, parent, value: int, width: int = 24):
         """Draw a vertical pixel-block popularity bar (10 blocks tall)."""
