@@ -756,9 +756,9 @@ class SpotifyWidget:
 
         # Info
         info = tk.Frame(frame, bg=row_bg)
-        info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=4)
+        info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6)
 
-        # Clickable artist name
+        # Clickable artist name — vertically centred
         artist_url = artist.get("url", "#")
         artist_name_lbl = tk.Label(
             info,
@@ -771,7 +771,7 @@ class SpotifyWidget:
             anchor=tk.W,
             cursor="hand2",
         )
-        artist_name_lbl.pack(anchor=tk.W)
+        artist_name_lbl.place(relx=0, rely=0.5, anchor=tk.W)
         artist_name_lbl.bind("<Button-1>", lambda e: webbrowser.open(artist_url) if artist_url != "#" else None)
 
 
