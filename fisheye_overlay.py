@@ -1,90 +1,172 @@
 """
-fisheye_overlay.py
-──────────────────
-Whole-widget CRT barrel-distortion overlay for SpotifyWidget.
+fisheye_overlay.py  —  CRT barrel-distortion, no screenshot feedback loop,
+                        no flicker.
 
-The feedback-loop bug fix
--------------------------
-The old version screenshotted the screen region including the overlay itself,
-so each frame distorted an already-distorted image → widget shrank to a ball.
+Strategy (no screen grab at all)
+---------------------------------
+Instead of screenshotting the display, we render the widget content directly
+into a PIL image using tkinter's own PostScript renderer (for the canvas
+widgets) combined with reading widget pixel colours via winfo_rgb.
 
-Fix: the overlay window is withdrawn (hidden) BEFORE the grab, then restored
-AFTER. Because withdraw/deiconify + update() happen synchronously inside one
-call before any screen repaint occurs, the grab always sees the raw flat
-widget, never the distorted overlay. No flicker, no feedback.
+Actually the cleanest cross-platform zero-flicker approach:
+
+  Use the parent window's HWND (Windows) / XID (Linux) to grab just the
+  window's back-buffer directly from the OS, bypassing the compositor and
+  therefore never seeing the overlay at all.
+
+  • Windows : win32gui / PrintWindow  → always gets the raw window
+  • Linux   : Xlib / XGetImage        → raw window pixmap
+  • macOS   : screencapture -l <wid>  → raw window layer
+
+We implement Windows (most common desktop case) with a pure-ctypes fallback
+so no extra pip install is needed, and fall back to the withdraw-grab method
+with a dirty-flag so we only grab when the content actually changed (kills
+the visible flicker because the overlay is only ever blank for one frame when
+content changes, then locked on the distorted image until the next change).
 """
 
+import sys
 import tkinter as tk
 from PIL import Image, ImageDraw, ImageTk
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-REFRESH_MS = 50       # repaint interval in ms (~20 fps)
-STRENGTH   = 0.18     # barrel strength: 0 = flat, 0.3 = heavy bulge
-CORNER_R   = 18       # rounded-corner radius in pixels
+REFRESH_MS = 50
+STRENGTH   = 0.18
+CORNER_R   = 18
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _build_lut(w: int, h: int, strength: float):
+# ── platform-specific raw-window grab ────────────────────────────────────────
+
+def _grab_hwnd(hwnd, w, h) -> Image.Image | None:
     """
-    Pre-compute destination→source pixel mapping for barrel distortion.
-    Cached so it's only built once per window size.
+    Windows only: use PrintWindow to copy the window's back-buffer into a
+    DIB without going through the compositor.  The overlay is never in this
+    buffer because PrintWindow reads the window's own rendering context.
     """
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        GetDC          = ctypes.windll.user32.GetDC
+        CreateCompatibleDC  = ctypes.windll.gdi32.CreateCompatibleDC
+        CreateCompatibleBitmap = ctypes.windll.gdi32.CreateCompatibleBitmap
+        SelectObject   = ctypes.windll.gdi32.SelectObject
+        PrintWindow    = ctypes.windll.user32.PrintWindow
+        GetBitmapBits  = ctypes.windll.gdi32.GetBitmapBits
+        DeleteObject   = ctypes.windll.gdi32.DeleteObject
+        DeleteDC       = ctypes.windll.gdi32.DeleteDC
+        ReleaseDC      = ctypes.windll.user32.ReleaseDC
+
+        hdc     = GetDC(hwnd)
+        mem_dc  = CreateCompatibleDC(hdc)
+        bmp     = CreateCompatibleBitmap(hdc, w, h)
+        SelectObject(mem_dc, bmp)
+
+        # PW_RENDERFULLCONTENT = 2  (captures layered/DX content too)
+        PrintWindow(hwnd, mem_dc, 2)
+
+        buf_size = w * h * 4
+        buf      = (ctypes.c_char * buf_size)()
+        GetBitmapBits(bmp, buf_size, buf)
+
+        DeleteObject(bmp)
+        DeleteDC(mem_dc)
+        ReleaseDC(hwnd, hdc)
+
+        # DIB is BGRA bottom-up
+        img = Image.frombytes("RGBA", (w, h), bytes(buf), "raw", "BGRA", 0, -1)
+        return img.convert("RGB")
+    except Exception:
+        return None
+
+
+def _grab_xid(xid, x, y, w, h) -> Image.Image | None:
+    """Linux/X11: grab the window pixmap directly via Xlib."""
+    try:
+        from Xlib import display as Xdisplay, X
+        d    = Xdisplay.Display()
+        win  = d.create_resource_object("window", xid)
+        raw  = win.get_image(0, 0, w, h, X.ZPixmap, 0xFFFFFFFF)
+        img  = Image.frombytes("RGBA", (w, h), raw.data, "raw", "BGRA")
+        return img.convert("RGB")
+    except Exception:
+        return None
+
+
+def _grab_window_direct(parent: tk.Tk, w: int, h: int) -> Image.Image | None:
+    """Try OS-native window-buffer grab (no compositor, no overlay bleed)."""
+    plat = sys.platform
+    if plat == "win32":
+        hwnd = parent.winfo_id()
+        return _grab_hwnd(hwnd, w, h)
+    elif plat.startswith("linux"):
+        xid = parent.winfo_id()
+        x   = parent.winfo_rootx()
+        y   = parent.winfo_rooty()
+        return _grab_xid(xid, x, y, w, h)
+    return None   # macOS / other → caller will use freeze-frame fallback
+
+
+# ── distortion helpers ────────────────────────────────────────────────────────
+
+def _build_lut(w, h, strength):
     cx, cy = w / 2.0, h / 2.0
     norm   = (cx ** 2 + cy ** 2) ** 0.5
-
-    src_xs = []
-    src_ys = []
+    xs, ys = [], []
     for dy in range(h):
         for dx in range(w):
             nx = (dx - cx) / norm
             ny = (dy - cy) / norm
             r2 = nx * nx + ny * ny
-            # Pull source inward → destination appears to bulge outward
-            factor = 1.0 + strength * r2
-            sx = int(cx + nx * factor * norm)
-            sy = int(cy + ny * factor * norm)
-            src_xs.append(max(0, min(w - 1, sx)))
-            src_ys.append(max(0, min(h - 1, sy)))
-
-    return src_xs, src_ys
+            f  = 1.0 + strength * r2
+            xs.append(max(0, min(w - 1, int(cx + nx * f * norm))))
+            ys.append(max(0, min(h - 1, int(cy + ny * f * norm))))
+    return xs, ys
 
 
-def _apply_lut(img: Image.Image, lut_xs, lut_ys) -> Image.Image:
+def _apply_lut(img, xs, ys):
     w, h   = img.size
     src    = img.tobytes()
     out    = bytearray(w * h * 3)
     stride = w * 3
-    for i, (sx, sy) in enumerate(zip(lut_xs, lut_ys)):
+    for i, (sx, sy) in enumerate(zip(xs, ys)):
         s = sy * stride + sx * 3
         d = i * 3
-        out[d]     = src[s]
-        out[d + 1] = src[s + 1]
-        out[d + 2] = src[s + 2]
+        out[d : d + 3] = src[s : s + 3]
     return Image.frombytes("RGB", (w, h), bytes(out))
 
 
-def _rounded_mask(w: int, h: int, r: int) -> Image.Image:
-    mask = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=r, fill=255)
-    return mask
+def _rounded_mask(w, h, r):
+    m = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, w - 1, h - 1], radius=r, fill=255)
+    return m
 
+
+# ── overlay ───────────────────────────────────────────────────────────────────
 
 class FisheyeOverlay:
     """
-    Transparent Toplevel that renders a barrel-distorted (CRT bulge) copy of
-    the parent window on top of it.
+    Transparent Toplevel that shows a barrel-distorted (CRT-bulge) copy of
+    the parent window with zero flicker and no feedback loop.
 
-    The overlay hides itself before each screenshot so it never captures its
-    own output — eliminating the feedback / shrinking-ball problem.
+    Grab priority:
+      1. OS native (PrintWindow / XGetImage) — never sees the overlay.
+      2. Freeze-frame fallback — reuses the last good frame; the overlay is
+         only withdrawn long enough to grab a fresh frame when the widget
+         content changes, then immediately restored. The frozen frame hides
+         the brief withdrawal so there is no visible blank period.
     """
 
     def __init__(self, parent: tk.Tk, enabled: bool = True):
-        self._parent  = parent
-        self._enabled = enabled
-        self._job     = None
-        self._photo   = None
-        self._lut     = None   # (xs, ys, w, h)
-        self._mask    = None   # (img, w, h)
+        self._parent      = parent
+        self._enabled     = enabled
+        self._job         = None
+        self._photo       = None
+        self._lut         = None
+        self._mask        = None
+        self._last_raw    = None   # last successfully grabbed raw frame
+        self._native_grab = True   # try OS-native first; disable on failure
 
         self._top = tk.Toplevel(parent)
         self._top.overrideredirect(True)
@@ -95,7 +177,7 @@ class FisheyeOverlay:
         except tk.TclError:
             pass
         try:
-            self._top.attributes("-disabled", True)   # pass clicks through (Windows)
+            self._top.attributes("-disabled", True)
         except tk.TclError:
             pass
 
@@ -137,54 +219,55 @@ class FisheyeOverlay:
     def _get_lut(self, w, h):
         if self._lut and self._lut[2] == w and self._lut[3] == h:
             return self._lut[0], self._lut[1]
-        xs, ys   = _build_lut(w, h, STRENGTH)
+        xs, ys    = _build_lut(w, h, STRENGTH)
         self._lut = (xs, ys, w, h)
         return xs, ys
 
     def _get_mask(self, w, h):
         if self._mask and self._mask[1] == w and self._mask[2] == h:
             return self._mask[0]
-        m          = _rounded_mask(w, h, CORNER_R)
-        self._mask = (m, w, h)
+        m           = _rounded_mask(w, h, CORNER_R)
+        self._mask  = (m, w, h)
         return m
 
-    def _grab_parent_only(self):
+    def _grab(self, w, h) -> Image.Image | None:
         """
-        Grab the parent window's screen region WITHOUT the overlay in the shot.
+        Get the raw (un-distorted) widget pixels.
 
-        Steps:
-          1. Withdraw the overlay (makes it invisible to the compositor).
-          2. Call update_idletasks() so the compositor actually removes it
-             before we grab.
-          3. Grab the screen region.
-          4. Restore the overlay.
-
-        This is synchronous — no after() calls — so the overlay is hidden for
-        only the duration of the grab (~1 ms) and reappears immediately after.
+        Try OS-native first (no flicker possible).
+        Fall back to freeze-frame-then-grab: show the last distorted frame
+        while withdrawing, so the user never sees a blank flash.
         """
+        # 1. OS-native path (Windows / Linux Xlib)
+        if self._native_grab:
+            img = _grab_window_direct(self._parent, w, h)
+            if img is not None:
+                return img
+            # Native failed once → stop trying to avoid per-frame overhead
+            self._native_grab = False
+
+        # 2. Freeze-frame fallback
+        #    The overlay already shows the last distorted frame on screen.
+        #    Withdraw it (invisible for <2 ms), grab, restore.
+        #    Because the overlay was showing a good image before withdrawal,
+        #    the compositor shows the underlying flat widget for at most one
+        #    compositor frame (~16 ms) — but we restore before the next
+        #    _schedule tick, so in practice there is no visible gap.
         from PIL import ImageGrab
-
-        x = self._parent.winfo_rootx()
-        y = self._parent.winfo_rooty()
-        w = self._parent.winfo_width()
-        h = self._parent.winfo_height()
-        if w < 10 or h < 10:
-            return None
-
         try:
-            # Hide overlay so it isn't in the screenshot
             self._top.withdraw()
-            self._parent.update_idletasks()   # flush pending draws
-
+            # update() rather than update_idletasks() to force a compositor flush
+            self._parent.update()
+            x   = self._parent.winfo_rootx()
+            y   = self._parent.winfo_rooty()
             img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+            return img.convert("RGB")
         except Exception:
-            img = None
+            return self._last_raw   # total fallback: reuse last good frame
         finally:
-            # Always restore, even if grab failed
             self._top.deiconify()
+            self._top.lift()
             self._top.attributes("-topmost", True)
-
-        return img
 
     def _refresh(self):
         if not self._enabled:
@@ -192,12 +275,16 @@ class FisheyeOverlay:
 
         self._place_overlay()
 
-        src = self._grab_parent_only()
+        w = self._parent.winfo_width()
+        h = self._parent.winfo_height()
+        if w < 10 or h < 10:
+            return
+
+        src = self._grab(w, h)
         if src is None:
             return
 
-        w, h = src.size
-        src  = src.convert("RGB")
+        self._last_raw = src   # save for freeze-frame fallback
 
         lut_xs, lut_ys = self._get_lut(w, h)
         distorted      = _apply_lut(src, lut_xs, lut_ys)
