@@ -154,7 +154,6 @@ class FisheyeOverlay:
 
         if enabled:
             self._show()
-        # Forward all mouse events through the canvas to widgets below
         self._bind_passthrough()
 
     # ── public ────────────────────────────────────────────────────────────────
@@ -182,7 +181,7 @@ class FisheyeOverlay:
 
     def _show(self):
         self._canvas.place(x=0, y=0, relwidth=1.0, relheight=1.0)
-        self._canvas.lift()
+        self._canvas.tkraise()
         self._schedule()
 
     def _bind_passthrough(self):
@@ -240,7 +239,7 @@ class FisheyeOverlay:
         self._canvas.delete("all")
         if self._photo:
             self._canvas.create_image(0, 0, anchor=tk.NW, image=self._photo)
-        self._canvas.lift()
+        self._canvas.tkraise()
 
     def _schedule(self):
         self._refresh()
