@@ -1,4 +1,4 @@
-# Spotify Dashboard
+# The Vinyl Vault
 
 A desktop application that displays your top 5 most listened artists and songs from Spotify with time period filtering (This Week, This Month, Last 6 Months).
 
@@ -11,7 +11,7 @@ A desktop application that displays your top 5 most listened artists and songs f
   - This Month (medium_term)
   - Last 6 Months (long_term)
 - 🔐 Secure OAuth authentication with Spotify
-- 💻 Clean, user-friendly GUI
+- 💻 Clean, user-friendly and retro-themed GUI
 
 ## Requirements
 
@@ -42,7 +42,7 @@ pip install -r requirements.txt
 ```
 SPOTIFY_CLIENT_ID=your_client_id_here
 SPOTIFY_CLIENT_SECRET=your_client_secret_here
-SPOTIFY_REDIRECT_URI=http://localhost:8888/callback
+SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 ```
 
 ## Usage
