@@ -2,7 +2,7 @@
 
 A desktop application that displays your top 5 most listened artists and songs from Spotify with time period filtering (This Week, This Month, Last 6 Months).
 
-⚠️ AI-assisted project: This repository was primarily developed using AI-assisted ("vibe coding") workflows.
+>⚠️ AI-assisted project: This repository was primarily developed using AI-assisted ("vibe coding") workflows.
 
 ## Features
 
